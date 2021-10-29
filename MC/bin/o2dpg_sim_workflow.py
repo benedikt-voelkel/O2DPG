@@ -61,6 +61,7 @@ PARSER.add_argument('-colBkg',help='embedding background collision system', defa
 
 PARSER.add_argument('-e',help='simengine', default='TGeant4')
 PARSER.add_argument('-tf',help='number of timeframes', default=2)
+PARSER.add_argument('--timestamp', type=int, help='timestamp for fetching corresponding objects/info from CCDB')
 PARSER.add_argument('--production-offset',help='Offset determining bunch-crossing '
                      + ' range within a (GRID) production. This number sets first orbit to '
                      + 'Offset x Number of TimeFrames x OrbitsPerTimeframe (up for further sophistication)', default=0)
@@ -236,6 +237,8 @@ def make_workflow(args):
             BKGtask['cmd']='o2-sim -e ' + SIMENGINE   + ' -j ' + str(NWORKERS) + ' -n '     + str(NBKGEVENTS) \
                          + ' -g  '      + str(GENBKG) + ' '    + str(MODULES)  + ' -o bkg ' + str(INIBKG)     \
                          + ' --field '  + str(BFIELD) + ' '    + str(CONFKEYBKG)
+            if args.timestamp:
+                BKGtask['cmd'] += f" --timestamp {args.timestamp}"
             workflow['stages'].append(BKGtask)
 
             # check if we should upload background event
@@ -437,6 +440,8 @@ def make_workflow(args):
                       + ' --field ' + str(BFIELD)    + ' -j ' + str(NWORKERS) + ' -g ' + str(GENERATOR)   \
                       + ' '         + str(TRIGGER)   + ' '    + str(CONFKEY)  + ' '    + str(INIFILE)     \
                       + ' -o '      + signalprefix   + ' '    + embeddinto
+       if args.timestamp:
+           SGNtask['cmd'] += f" --timestamp {args.timestamp}"
        workflow['stages'].append(SGNtask)
 
        # some tasks further below still want geometry + grp in fixed names, so we provide it here
