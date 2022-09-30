@@ -16,6 +16,8 @@ def create_sim_config(args):
            d[sk] = flatconfig[entry]
            cfg[mk] = d
 
+    if args.embedding and args.filter_bkg_hits:
+       add(config, {"ITSDigitizerParam.filterBkgOnSgnHits": "true"})
     # some specific settings for pp productions
     if COLTYPEIR == 'pp':
        # Alpide chip settings

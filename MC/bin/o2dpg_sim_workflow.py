@@ -77,6 +77,7 @@ parser.add_argument('-procBkg',help='process type: inel, ..., do not set it for 
 parser.add_argument('-iniBkg',help='embedding background generator init parameters file (full path required)', default='${O2DPG_ROOT}/MC/config/common/ini/basic.ini')
 parser.add_argument('-confKeyBkg',help='embedding background configuration key values, for example: "GeneratorPythia8.config=pythia8bkg.cfg"', default='')
 parser.add_argument('-colBkg',help='embedding background collision system', default='PbPb')
+parser.add_argument('--filter-bkg-hits', dest="filter_bkg_hits", action="store_true", help='whether to filter background hits based on signal hits in embedding run')
 
 parser.add_argument('-e',help='simengine', default='TGeant4')
 parser.add_argument('-tf',help='number of timeframes', default=2)

@@ -23,6 +23,7 @@ MODULES="--skipModules ZDC"
 SIMENGINE=${SIMENGINE:-TGeant4}
 PYPROCESS=${PYPROCESS:-ccbar} #ccbar, bbar, ...
 SEED=${SEED:+-seed $SEED}
+HITFILTERING=${HITFILTERING:+--filter-bkg-hits}
 
 export ALICEO2_CCDB_LOCALCACHE=$PWD/.ccdb
 
@@ -32,7 +33,7 @@ ${O2DPG_ROOT}/MC/bin/o2dpg_sim_workflow.py -eCM 5020 -col pp -gen pythia8 -proc 
                                            -tf ${NTIMEFRAMES} -nb ${NBKGEVENTS}              \
                                            -ns ${NSIGEVENTS} -e ${SIMENGINE}                 \
                                            -j ${NWORKERS} --embedding -interactionRate 50000 \
-                                           --include-analysis -run 310000 ${SEED}
+                                           --include-analysis -run 310000 ${SEED} ${HITFILTERING}
 
 # run workflow
 ${O2DPG_ROOT}/MC/bin/o2_dpg_workflow_runner.py -f workflow.json --cpu-limit ${CPULIMIT:-8} -tt aod
