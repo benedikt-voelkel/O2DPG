@@ -78,6 +78,9 @@ parser.add_argument('-iniBkg',help='embedding background generator init paramete
 parser.add_argument('-confKeyBkg',help='embedding background configuration key values, for example: "GeneratorPythia8.config=pythia8bkg.cfg"', default='')
 parser.add_argument('-colBkg',help='embedding background collision system', default='PbPb')
 parser.add_argument('--filter-bkg-hits', dest="filter_bkg_hits", action="store_true", help='whether to filter background hits based on signal hits in embedding run')
+parser.add_argument('--its-voxels-x', dest="its_voxels_x", type=int, help='number of voxels in X')
+parser.add_argument('--its-voxels-y', dest="its_voxels_y", type=int, help='number of voxels in Y')
+parser.add_argument('--its-voxels-z', dest="its_voxels_z", type=int, help='number of voxels in Z')
 
 parser.add_argument('-e',help='simengine', default='TGeant4')
 parser.add_argument('-tf',help='number of timeframes', default=2)
@@ -680,7 +683,7 @@ for tf in range(1, NTIMEFRAMES + 1):
      returnstring = returnstring + '"'
      return returnstring
 
-   def putConfigValuesNew(listOfMainKeys=[], localCF = {}):
+   def putConfigValuesNew(listOfMainKeys=None, localCF = None):
      """
      Creates the final --configValues string to be passed to the workflows.
      Uses the globalTFConfigValues and applies other parameters on top
@@ -693,14 +696,18 @@ for tf in range(1, NTIMEFRAMES + 1):
 
      # now bring in the relevant keys
      # from the external config
+     listOfMainKeys = listOfMainKeys or []
      for key in listOfMainKeys:
        # it this key exists
+       print(key)
        keydict = anchorConfig.get(key)
        if keydict != None:
           for k in keydict:
              cf[key+"."+k] = keydict[k]
+     print(cf)
 
      # apply overrides
+     localCF = localCF or {}
      for e in localCF:
        cf[e] = localCF[e]
 
@@ -709,6 +716,7 @@ for tf in range(1, NTIMEFRAMES + 1):
        isfirst=False
 
      returnstring = returnstring + '"'
+     print(returnstring)
      return returnstring
 
    # parsing passName from env variable

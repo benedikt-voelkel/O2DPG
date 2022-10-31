@@ -18,6 +18,9 @@ def create_sim_config(args):
 
     if args.embedding and args.filter_bkg_hits:
        add(config, {"ITSDigitizerParam.filterBkgOnSgnHits": "true"})
+       add(config, {"ITSDigitizerParam.voxelsX": args.its_voxels_x})
+       add(config, {"ITSDigitizerParam.voxelsY": args.its_voxels_y})
+       add(config, {"ITSDigitizerParam.voxelsZ": args.its_voxels_z})
     # some specific settings for pp productions
     if COLTYPEIR == 'pp':
        # Alpide chip settings
