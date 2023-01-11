@@ -233,10 +233,7 @@ class GeneratorEvtGen : public T
       t = x4.get(0) * kconvT + T::mParticles[indexMother].T();  //[s]
 
       T::mParticles.push_back(TParticle(partnum, istat, jmotherfirst, -1, jdaugfirst, jdauglast, px, py, pz, e, x, y, z, t));
-      if (istat == 1) {
-        // Make sure this particle will be tracked. Needs to be done explicitly here since these particles are added outside of the inherited importParticles function
-        T::mParticles.back().SetBit(ParticleStatus::kToBeDone);
-      }
+      mcutils::encodeParticleStatusAndTracking(T::mParticles.back(), istat == 1);
       ////
       if (mDebug)
         std::cout << "   -> PDG " << partnum << " STATUS " << istat << " position in the array" << T::mParticles.size() - 1 << " mother " << jmotherfirst << " First daughter" << jdaugfirst << " Last daughter " << jdauglast << std::endl;

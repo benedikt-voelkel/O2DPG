@@ -56,6 +56,7 @@ public:
       const double et{std::hypot(std::hypot(pt, pz), m)};
       sign *= randomizePDGsign ? -1 : 1;
       mParticles.push_back(TParticle(sign * pdg, 1, -1, -1, -1, -1, px, py, pz, et, 0., 0., 0., 0.));
+      o2::mcutils::encodeParticleStatusAndTracking(mParticles.back());
     }
 
     if (pdg2 != -1)
@@ -71,6 +72,7 @@ public:
         const double et{std::hypot(std::hypot(pt, pz), m)};
         sign *= randomizePDGsign ? -1 : 1;
         mParticles.push_back(TParticle(sign * pdg2, 1, -1, -1, -1, -1, px, py, pz, et, 0., 0., 0., 0.));
+        o2::mcutils::encodeParticleStatusAndTracking(mParticles.back());
       }
     }
 

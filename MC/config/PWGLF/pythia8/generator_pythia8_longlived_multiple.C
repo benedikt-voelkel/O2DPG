@@ -46,6 +46,7 @@ class GeneratorPythia8LongLivedGunMultiple : public GeneratorPythia8LongLivedGun
         const double pz{pt * std::sinh(eta)};
         const double et{std::hypot(std::hypot(pt, pz), cfg.mass)};
         mParticles.push_back(TParticle(cfg.pdg, 1, -1, -1, -1, -1, px, py, pz, et, 0., 0., 0., 0.));
+        o2::mcutils::encodeParticleStatusAndTracking(mParticles.back());
       }
     }
     return true;
