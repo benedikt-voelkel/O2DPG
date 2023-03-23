@@ -77,8 +77,9 @@ DETECTORS = ["rest", "ITS", "TOF", "EMC", "TRD", "PHS", "FT0", "HMP", "MFT", "FD
 def find_files(path, search, depth=0):
   files = []
   for d in range(depth + 1):
-    wildcards = "/*" * d
-    path_search = path + wildcards + f"/{search}"
+    wildcards = ["*"] * d
+    path_search = join(path, *wildcards, search)
+    print(path_search)
     files.extend(glob(path_search))
   return files
 
@@ -87,6 +88,7 @@ def number_of_timeframes(path):
   """
   Derive number of timeframes from what is found in path
   """
+  print("Path: ", path)
   files = find_files(path, "tf*")
   if not len(files):
     print("WARNING: Cannot derive number of timeframes, set it to 1")
@@ -126,6 +128,7 @@ def jsonise_pipeline(path):
   iterations = json_pipeline["iterations"]
   metrics_map = {}
   json_pipeline["summary"] = metrics_map
+  number_of_timeframes = 0
   with open(path, "r") as f:
     for l in f:
       l = l.strip().split()
@@ -142,6 +145,14 @@ def jsonise_pipeline(path):
       if "iter" in d:
         iterations.append(d)
         name = d["name"]
+        name_split = name.split("_")
+        if len(name_split) > 1:
+          try:
+            tf_i = int(name_split[-1])
+            number_of_timeframes = max(tf_i, number_of_timeframes)
+          except TypeError:
+            pass
+
         if name not in metrics_map:
             metrics_map[name] = [0] * len(MET_TO_IND)
         for metric in ["uss", "pss", "cpu"]:
@@ -158,8 +169,10 @@ def jsonise_pipeline(path):
   json_pipeline["meta"]["mem_limit"] = float(json_pipeline["meta"]["mem_limit"])
 
   # add the number of timeframes
-  ntfs = number_of_timeframes(dirname(path))
-  json_pipeline["tags"] = {"ntfs": ntfs}
+  if not number_of_timeframes:
+    print("WARNING: Cannot derive number of timeframes, set to 1")
+    number_of_timframes = 1
+  json_pipeline["tags"] = {"ntfs": number_of_timeframes}
 
   files = find_files(dirname(path), "*.log_time", 1)
   if not files:
@@ -730,18 +743,21 @@ def resources(args):
         met_ind = MET_TO_IND[metrics_name_map[w]]
         scale = scaling_map[w]
         for tptf in tasks_per_tf:
-            values = []
+            # now we go through the tasks
+            values_per_pipeline = []
             for met, n in zip(metrics, ntfs):
-                this_value = 0
+                # there is one met per pipeline, each pipeline might have been run with a different number of timeframes
+                values_per_timeframe = []
                 for i in range(1, n + 1):
                     key = f"{tptf}_{i}"
                     # It could happen that a task is missing in a certain TF, e.g. when it went through fast enough to not leave a trace in pipeline iterations
                     if key not in met:
                         continue
                     # now do per TF in current metrics, here we always take the max for now ==> conservative
-                    this_value = max(met[key][met_ind], this_value)
-                values.append(this_value)
-            resources_map[tptf][w] = scale(derive_func(values))
+                    #this_value = max(met[key][met_ind], this_value)
+                    values_per_timeframe.append(met[key][met_ind])
+                values_per_pipeline.append(scale(derive_func(values_per_timeframe)))
+            resources_map[tptf][w] = scale(derive_func(values_per_pipeline))
 
         for tntf in tasks_no_tf:
             resources_map[tntf][w] = scale(derive_func([met[tntf][met_ind] for met in metrics]))

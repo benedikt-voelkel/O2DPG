@@ -443,6 +443,7 @@ def update_resource_estimates(workflow, resource_json):
         #        # respect the relative CPU settings
         #        cpu *= rel_cpu
         #    task["resources"]["cpu"] = cpu
+    print(stages)
 
 # a function to read a software environment determined by alienv into
 # a python dictionary
