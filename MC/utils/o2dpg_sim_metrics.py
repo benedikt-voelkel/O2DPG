@@ -1,19 +1,41 @@
 #!/usr/bin/env python3
 
 import sys
-from os.path import join, exists, basename
-from os import makedirs
+from os.path import join, exists, basename, dirname
+from os import makedirs, environ
 from copy import deepcopy
 import argparse
 import re
 from datetime import datetime
-from time import time_ns
+import importlib.util
 import matplotlib.pyplot as plt
 import matplotlib
 import json
 import numpy as np
 import pandas as pd
-import seaborn as sns
+
+
+# make sure O2DPG + O2 is loaded
+O2DPG_ROOT=environ.get('O2DPG_ROOT')
+
+# dynamically import required utilities
+module_name = "o2dpg_workflow_resource_fitting"
+spec = importlib.util.spec_from_file_location(module_name, join(O2DPG_ROOT, "MC", "utils", "resource_estimation", "o2dpg_workflow_resource_fitting.py"))
+o2dpg_workflow_resource_fitting = importlib.util.module_from_spec(spec)
+sys.modules[module_name] = o2dpg_workflow_resource_fitting
+spec.loader.exec_module(o2dpg_workflow_resource_fitting)
+
+from o2dpg_workflow_resource_fitting import ResourceFitter
+
+# dynamically import required utilities
+module_name = "o2dpg_workflow_utils"
+spec = importlib.util.spec_from_file_location(module_name, join(O2DPG_ROOT, "MC", "bin", "o2dpg_workflow_utils.py"))
+o2dpg_workflow_utils = importlib.util.module_from_spec(spec)
+sys.modules[module_name] = o2dpg_workflow_utils
+spec.loader.exec_module(o2dpg_workflow_utils)
+
+from o2dpg_workflow_utils import read_workflow
+
 
 ############################################################################
 #                                                                          #
@@ -77,6 +99,8 @@ CATEGORIES_RAW = ["sim", "digi", "reco", "pvfinder", "svfinder", "tpccluster", "
 CATEGORIES_REG = [re.compile(c, flags=re.IGNORECASE) for c in CATEGORIES_RAW]
 CATEGORIES_EXCLUDE = ["", "QC", "", "", "", "QC", "QC", ""]
 
+RNG = np.random.default_rng()
+
 
 def get_parent_category(proposed):
   """
@@ -133,12 +157,26 @@ def convert_to_float_if_possible(value):
   return value
 
 
+def get_task_name_tf(task_name):
+  try:
+    name_split = task_name.split("_")
+    tf = int(name_split[-1])
+    # we only want to have the name without timeframe suffix
+    task_name = "_".join(name_split[:-1])
+  except ValueError:
+    tf = 0
+  return task_name, tf
+
+
 class Resources:
   """
   A wrapper class for resources
 
   holds resources as pandas dataframe as well as some other useful info
   """
+
+  # use this and increment whenever a new dataframe was constructed in such an object
+  COUNTER_FOR_ID = 0
 
   def __init__(self, pipeline_path=None):
     # this will be extended on-the-fly. However, we will add one more key, namely the timeframe, manually
@@ -148,7 +186,7 @@ class Resources:
     self.number_of_timeframes = None
     self.name = None
     # use this as an id in the dataframe later
-    self.timestamp = int(time_ns() / 1000)
+    #self.timestamp = None
 
     if pipeline_path:
       self.extract_from_pipeline(pipeline_path)
@@ -181,11 +219,12 @@ class Resources:
     Add the rows for meta info
     """
     length = len(self.dict_for_df[list(self.dict_for_df.keys())[0]])
+    # we will hash this so we can distinguish metrics in case they are put into one dataframe
     for key, value in self.meta.items():
       self.dict_for_df[key] = [value] * length
 
     # this can be used as an identifier for concatenated dfs for instance
-    self.dict_for_df["id"] = [self.timestamp] * length
+    self.dict_for_df["id"] = [Resources.COUNTER_FOR_ID] * length
 
   def convert_columns_to_float_if_possible(self):
     """
@@ -257,13 +296,7 @@ class Resources:
     """
     for key, value in iteration.items():
       if key == "name":
-        try:
-          name_split = value.split("_")
-          tf_i = int(name_split[-1])
-          # we only want to have the name without timeframe suffix
-          value = "_".join(name_split[:-1])
-        except ValueError:
-          tf_i = 0
+        value, tf_i = get_task_name_tf(value)
 
         self.dict_for_df["timeframe"].append(tf_i)
 
@@ -313,6 +346,8 @@ class Resources:
     self.compute_time_delta()
     self.put_in_df()
     self.extract_number_of_timeframes()
+
+    Resources.COUNTER_FOR_ID += 1
 
 
 def make_default_figure(ax=None, **fig_args):
@@ -475,6 +510,39 @@ def make_pie(labels, y, ax=None, cmap=None, title=None, **kwargs):
     figure.suptitle(title, fontsize=40)
 
   return figure, ax
+
+
+def plot_ratio(x, *y, path=None, xlabel="xlabel", ylabel="ylabel", legend_labels=None, ratio_ylim=None, **kwargs):
+  figure, axes = plt.subplots(2, 1, figsize=(20, 20), height_ratios=(3, 1), sharex=True)
+  y_ref = np.array(y[0])
+  ax_numerator = axes[0]
+  ax_ratio = axes[1]
+  if not legend_labels or len(legend_labels) != len(y):
+    legend_labels = [f"y{i}" for i, _ in enumerate(y)]
+
+  markers = ["o", "v", "P"]
+  for i, y_numerator in enumerate(y):
+    y_numerator = np.array(y_numerator)
+    y_ratio = y_numerator / y_ref
+
+    ax_numerator.plot(x, y_numerator, label=legend_labels[i], lw=0, ms=30, marker=markers[i%len(markers)])
+    ax_ratio.plot(x, y_ratio, lw=0, ms=30, marker=markers[i%len(markers)])
+
+  for ax in axes:
+    ax.tick_params("x", rotation=90)
+    ax.tick_params("both", labelsize=30)
+
+  ax_ratio.set_xlabel(xlabel, fontsize=30)
+  ax_ratio.set_ylabel("ratio", fontsize=30)
+  if ratio_ylim:
+    ax_ratio.set_ylim(*ratio_ylim)
+  ax_numerator.set_ylabel(ylabel, fontsize=30)
+  ax_numerator.legend(loc="best", fontsize=30)
+
+  if path is None:
+    return figure, axes
+  save_figure(figure, path)
+  return None, None
 
 
 def plot_histo_and_pie(x, y, xlabel, ylabel, path, annotate=None, **kwargs):
@@ -816,6 +884,113 @@ def history(args):
   return 0
 
 
+def check_resources_vs_predictions(args):
+  """
+  Entrypoint to check real resource needs vs. predictions
+  """
+  resources = extract_resources([args.pipeline])[0]
+  task_names, resources_per_task = get_resources_per_task_within_category(resources)
+  resource_fitter = ResourceFitter()
+  resource_fitter.set_params(args.json_params)
+
+  predicted_resources_per_task = {res_name: [resource_fitter.predict(task, resources.meta, res_name, ignore_unknown=True) for task in task_names] for res_name in [METRIC_NAME_CPU, METRIC_NAME_USS, METRIC_NAME_PSS]}
+
+
+  # now we want ratio plots for all resources
+  out_dir = join(args.output, f"{resources.name}_dir")
+  if not exists(out_dir):
+    makedirs(out_dir)
+
+  plot_ratio(task_names, resources_per_task[METRIC_NAME_CPU]["max"], predicted_resources_per_task[METRIC_NAME_CPU], xlabel="task", ylabel="$\max\left(\#\mathrm{CPU}\\right)$", path=join(out_dir, f"cpu_tasks.png"), legend_labels=["measured", "predicted"], ratio_ylim=(0.5, 2.))
+  plot_ratio(task_names, resources_per_task[METRIC_NAME_USS]["max"], predicted_resources_per_task[METRIC_NAME_USS], xlabel="task", ylabel="$\max\left(\mathrm{USS}\,\,[MB]\\right)$", path=join(out_dir, f"uss_tasks.png"), legend_labels=["measured", "predicted"], ratio_ylim=(0.5, 2.))
+  plot_ratio(task_names, resources_per_task[METRIC_NAME_PSS]["max"], predicted_resources_per_task[METRIC_NAME_PSS], xlabel="task", ylabel="$\max\left(\mathrm{PSS}\,\,[MB]\\right)$", path=join(out_dir, f"pss_tasks.png"), legend_labels=["measured", "predicted"], ratio_ylim=(0.5, 2.))
+  return 0
+
+
+def check_resources_vs_estimates(args):
+  """
+  Entrypoint to check real resource needs vs. estimates
+  """
+  resources = extract_resources([args.pipeline])[0]
+  task_names, resources_per_task = get_resources_per_task_within_category(resources)
+  task_names = list(task_names)
+  workflow, workflow_meta = read_workflow(args.workflow)
+
+  # check if meta information is consistent
+  for key, value in resources.meta.items():
+    if key not in workflow_meta:
+      print(f"WARNING: Cannot find value for key {key} in workflow {args.workflow}")
+      continue
+    if value != workflow_meta[key] and key != "tf":
+      # ignore number of timeframes
+      print(f"WARNING: Found different values for key {key}: {value} (real) vs. {workflow_meta[key]} (estimates)")
+
+  # collect from workflow
+  workflow_dict = {}
+  for stage in workflow:
+    name = stage["name"]
+    name, _ = get_task_name_tf(name)
+    if name in workflow_dict:
+      continue
+    workflow_estimates = stage["resources"]
+    cpu = float(workflow_estimates["cpu"])
+    if relative_cpu := workflow_estimates["relative_cpu"]:
+      cpu /= relative_cpu
+    workflow_dict[name] = {METRIC_NAME_CPU: cpu, METRIC_NAME_PSS: float(workflow_estimates["mem"]), METRIC_NAME_USS: float(workflow_estimates["mem"])}
+
+  # now we want ratio plots for all resources
+  out_dir = join(args.output, f"{resources.name}_dir")
+  if not exists(out_dir):
+    makedirs(out_dir)
+
+  # intersection of task names
+  intersection = list(set(list(workflow_dict.keys())) & set(task_names))
+
+  intersection.sort()
+
+  def filter_and_sort_resources(t_names, res_per_t, t_inter):
+    filtered_and_sorted = []
+    for t in t_inter:
+      i = t_names.index(t)
+      filtered_and_sorted.append(res_per_t[i])
+    return filtered_and_sorted
+
+  ratios_dict = {}
+
+  def add_ratios(t_names, metric, res, est):
+
+    # For very low values, let's set them to 1
+    est = [e if e >= 1 else 1 for e in est]
+    res = [r if r >= 1 else 1 for r in res]
+
+    ratios = np.array(res) / np.array(est)
+    for t, r in zip(t_names, ratios):
+      if t not in ratios_dict:
+        ratios_dict[t] = {}
+      ratios_dict[t][metric] = r
+
+  resources_estimated = [workflow_dict[t][METRIC_NAME_CPU] for t in intersection]
+  resources_measured = filter_and_sort_resources(task_names, resources_per_task[METRIC_NAME_CPU]["max"], intersection)
+  add_ratios(intersection, METRIC_NAME_CPU, resources_measured, resources_estimated)
+  if args.plot:
+    plot_ratio(intersection, resources_measured, [workflow_dict[t][METRIC_NAME_CPU] for t in intersection], xlabel="task", ylabel="$\max\left(\#\mathrm{CPU}\\right)$", path=join(out_dir, f"cpu_tasks.png"), legend_labels=["measured", "estimated"], ratio_ylim=(0.5, 2.))
+
+  resources_estimated = [workflow_dict[t][METRIC_NAME_USS] for t in intersection]
+  resources_measured = filter_and_sort_resources(task_names, resources_per_task[METRIC_NAME_USS]["max"], intersection)
+  add_ratios(intersection, METRIC_NAME_USS, resources_measured, resources_estimated)
+  if args.plot:
+    plot_ratio(intersection, resources_measured, [workflow_dict[t][METRIC_NAME_USS] for t in intersection], xlabel="task", ylabel="$\max\left(\mathrm{USS}\,\,[MB]\\right)$", path=join(out_dir, f"uss_tasks.png"), legend_labels=["measured", "estimated"], ratio_ylim=(0.5, 2.))
+
+  resources_estimated = [workflow_dict[t][METRIC_NAME_PSS] for t in intersection]
+  resources_measured = filter_and_sort_resources(task_names, resources_per_task[METRIC_NAME_PSS]["max"], intersection)
+  add_ratios(intersection, METRIC_NAME_PSS, resources_measured, resources_estimated)
+  if args.plot:
+    plot_ratio(intersection, resources_measured, [workflow_dict[t][METRIC_NAME_PSS] for t in intersection], xlabel="task", ylabel="$\max\left(\mathrm{PSS}\,\,[MB]\\right)$", path=join(out_dir, f"pss_tasks.png"), legend_labels=["measured", "estimated"], ratio_ylim=(0.5, 2.))
+
+  with open(join(out_dir, "ratios.json"), "w") as f:
+    json.dump(ratios_dict, f)
+
+
 def compare(args):
   """
   Entrypoint for compare
@@ -991,15 +1166,27 @@ def main():
   plot_parser = sub_parsers.add_parser("history", help="Plot (multiple) metrcis from extracted metrics JSON file(s)")
   plot_parser.set_defaults(func=history)
   plot_parser.add_argument("-p", "--pipelines", nargs="*", help="pipeline_metric files from o2_dpg_workflow_runner", required=True)
-  plot_parser.add_argument("--output", help="output directory", default="resource_history")
+  plot_parser.add_argument("--output", help="output directory", default="o2dpg_sim_metrics_resource_history")
   plot_parser.add_argument("--filter-task", dest="filter_task", help="regex to filter only on certain task names in pipeline iterations")
   plot_parser.add_argument("--suffix", help="a suffix put at the end of the output file names")
   plot_parser.add_argument("--names", nargs="*", help="assign one custom name per pipeline")
 
+  check_parser = sub_parsers.add_parser("check-resources-vs-estimates", help="To check resources against their estimates")
+  check_parser.set_defaults(func=check_resources_vs_estimates)
+  check_parser.add_argument("-p", "--pipeline", help="pipeline_metric file to check", required=True)
+  check_parser.add_argument("--workflow", help="workflow.json file", required=True)
+  check_parser.add_argument("--output", help="output directory", default="o2dpg_sim_metrics_check_resources_vs_estimates")
+
+  check_parser = sub_parsers.add_parser("check-resources-vs-predictions", help="To check resources against their predictions")
+  check_parser.set_defaults(func=check_resources_vs_predictions)
+  check_parser.add_argument("-p", "--pipeline", help="pipeline_metric file to check", required=True)
+  check_parser.add_argument("--json-params", dest="json_params", help="JSON file with fit parameters", required=True)
+  check_parser.add_argument("--output", help="output directory", default="o2dpg_sim_metrics_check_resources_vs_predictions")
+
   plot_comparison_parser = sub_parsers.add_parser("compare", help="Compare resources from pipeline_metric file")
   plot_comparison_parser.set_defaults(func=compare)
   plot_comparison_parser.add_argument("-p", "--pipelines", nargs="*", help="pipeline_metric files from o2_dpg_workflow_runner", required=True)
-  plot_comparison_parser.add_argument("--output", help="output directory", default="resource_comparison")
+  plot_comparison_parser.add_argument("--output", help="output directory", default="o2dpg_sim_metrics_resource_comparison")
   plot_comparison_parser.add_argument("--names", nargs="*", help="assign one custom name per pipeline")
   plot_comparison_parser.add_argument("--feature", help="feature to be investigated", required=True, choices=FEATURES)
 
@@ -1013,7 +1200,7 @@ def main():
   pandas_json_parser = sub_parsers.add_parser("pandas-json", help="read pipeline_metric file, convert to pandas and write to JSON")
   pandas_json_parser.set_defaults(func=pandas_to_json)
   pandas_json_parser.add_argument("-p", "--pipelines", nargs="*", help="pipeline file to be converted", required=True)
-  pandas_json_parser.add_argument("-o", "--output", help="custom output filename", default="df.json")
+  pandas_json_parser.add_argument("-o", "--output", help="custom output filename", default="o2dpg_sim_metrics_df.json")
 
 
   args = parser.parse_args()
