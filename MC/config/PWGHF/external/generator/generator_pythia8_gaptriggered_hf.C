@@ -29,6 +29,13 @@ public:
   ///  Destructor
   ~GeneratorPythia8GapTriggeredHF() = default;
 
+  Bool_t Init() override
+  {
+    addCocktailConstituent(0, "interesting");
+    addCocktailConstituent(1, "minbias");
+    return o2::eventgen::GeneratorPythia8::Init();
+  }
+
   void addTriggerOnHadron(int hadPdg) { mHadronPdg = hadPdg; };
   void setQuarkRapidity(float yMin, float yMax)
   {
@@ -47,14 +54,16 @@ protected:
 
     // Simple straightforward check to alternate generators
     if (mGeneratedEvents % mInverseTriggerRatio == 0) {
+      notifyCocktailConstituent(0);
       // Generate event of interest
       bool genOk = false;
       while (!genOk) {
         if (GeneratorPythia8::generateEvent()) {
           genOk = selectEvent(mPythia.event);
-        }        
+        }
       }
     } else {
+      notifyCocktailConstituent(1);
       // Generate minimum-bias event
       bool genOk = false;
       while (!genOk) {
