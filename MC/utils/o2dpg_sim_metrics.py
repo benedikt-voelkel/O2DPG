@@ -133,6 +133,88 @@ def convert_to_float_if_possible(value):
   return value
 
 
+class ResourcesDirect:
+
+  INDEX_VALID = 0
+  INDEX_CPU = 1
+  INDEX_USS = 2
+  INDEX_PSS = 3
+
+  def __init__(self):
+    self.tid_to_resource_index = []
+    self.resources = []
+    self.relative_cpu = []
+    self.default_resources = []
+    self.task_names = []
+
+  @staticmethod
+  def get_task_name(task_name):
+    try:
+      name_split = task_name.split("_")
+      task_name = "_".join(name_split[:-1])
+    except ValueError:
+      pass
+    return task_name
+
+  def set_default_resources_from_workflow(self, workflow):
+    stages = workflow["stages"]
+    self.default_resources = [None] * len(stages)
+    self.tid_to_resource_index = [None for _ in stages]
+
+    for tid, task in enumerate(stages):
+      if task["timeframe"] >= 1:
+        task_name = "_".join(task["name"].split("_")[:-1])
+      else:
+        task_name = task["name"]
+
+      if task_name not in self.task_names:
+        resource_index = len(self.task_names)
+        self.task_names.append(task_name)
+        self.resources.append([False, [], [], []])
+        relative_cpu = task["resources"]["relative_cpu"]
+        if relative_cpu is None:
+          relative_cpu = 1
+        self.relative_cpu.append(relative_cpu)
+      else:
+        resource_index = self.task_names.index(task_name)
+      self.tid_to_resource_index[tid] = resource_index
+
+      resources = task["resources"]
+      memory = float(resources["mem"])
+      cpu = float(resources["cpu"])
+      # that we don't need, CPU is already scaled
+      #relative_cpu = resources["relative_cpu"]
+      self.default_resources[tid] = [True, cpu, memory, memory]
+
+  def add(self, tid, cpu, uss, pss, mem_reliable=True):
+    # first, we want to have the name without timeframe suffix
+    resource_index = self.tid_to_resource_index[tid]
+    this_resources = self.resources[resource_index]
+
+    if cpu >= 0:
+      this_resources[ResourcesDirect.INDEX_CPU].append(self.relative_cpu[resource_index] * cpu / 100)
+    if not mem_reliable:
+      return
+    this_resources[ResourcesDirect.INDEX_USS].append(uss)
+    this_resources[ResourcesDirect.INDEX_PSS].append(pss)
+
+  def get_resource_estimate(self, tid, requested_resource):
+    resource_index = self.tid_to_resource_index[tid]
+    print(resource_index, self.resources[resource_index])
+
+    if not self.resources[resource_index][ResourcesDirect.INDEX_VALID] or not self.resources[resource_index][requested_resource]:
+      # assuming that default resources are definitely defined
+      return self.default_resources[tid][requested_resource]
+
+    # return the maximum ==> conservative estimate
+    return max(self.resources[resource_index][requested_resource])
+
+  def mark_resources_as_valid(self, tid):
+    resource_index = self.tid_to_resource_index[tid]
+    self.resources[resource_index][ResourcesDirect.INDEX_VALID] = True
+
+
+
 class Resources:
   """
   A wrapper class for resources
