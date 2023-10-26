@@ -14,6 +14,7 @@ import socket
 import sys
 import traceback
 import platform
+import numpy as np
 try:
     from graphviz import Digraph
     havegraphviz=True
@@ -32,7 +33,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '.', 'o2dpg_workflow_uti
 from o2dpg_workflow_utils import read_workflow
 
 # defining command line options
-parser = argparse.ArgumentParser(description='Parallel execution of a (O2-DPG) DAG data/job pipeline under resource contraints.', 
+parser = argparse.ArgumentParser(description='Parallel execution of a (O2-DPG) DAG data/job pipeline under resource contraints.',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 parser.add_argument('-f','--workflowfile', help='Input workflow file name', required=True)
@@ -58,6 +59,10 @@ parser.add_argument('--checkpoint-on-failure', help=argparse.SUPPRESS) # debug o
                                                                        # argument is alien-path
 parser.add_argument('--retry-on-failure', help=argparse.SUPPRESS, default=0) # number of times a failing task is retried
 parser.add_argument('--no-rootinit-speedup', help=argparse.SUPPRESS, action='store_true') # disable init of ROOT environment vars to speedup init/startup
+# options to control/boost performance
+parser.add_argument("--optimise-cpu", dest="optimise_cpu", action="store_true", help=argparse.SUPPRESS) # try to optimise CPU efficiency during scheduling
+parser.add_argument("--dynamic-resources", dest="dynamic_resources", action="store_true", help=argparse.SUPPRESS) # derive resources dynamically
+
 parser.add_argument('--action-logfile', help='Logfilename for action logs. If none given, pipeline_action_#PID.log will be used')
 parser.add_argument('--metric-logfile', help='Logfilename for metric logs. If none given, pipeline_metric_#PID.log will be used')
 args = parser.parse_args()
@@ -65,7 +70,7 @@ args = parser.parse_args()
 def setup_logger(name, log_file, level=logging.INFO):
     """To setup as many loggers as you want"""
 
-    handler = logging.FileHandler(log_file, mode='w')        
+    handler = logging.FileHandler(log_file, mode='w')
     handler.setFormatter(formatter)
 
     logger = logging.getLogger(name)
@@ -127,10 +132,10 @@ def getChildProcs(basepid):
          proc=psutil.Process(int(p))
      except psutil.NoSuchProcess:
          continue
-         
+
      plist.append(proc)
   return plist
-  
+
 #
 # Code section to find all topological orderings
 # of a DAG. This is used to know when we can schedule
@@ -139,23 +144,23 @@ def getChildProcs(basepid):
 
 # class to represent a graph object
 class Graph:
- 
+
     # Constructor
     def __init__(self, edges, N):
- 
+
         # A List of Lists to represent an adjacency list
         self.adjList = [[] for _ in range(N)]
- 
+
         # stores in-degree of a vertex
         # initialize in-degree of each vertex by 0
         self.indegree = [0] * N
- 
+
         # add edges to the undirected graph
         for (src, dest) in edges:
- 
+
             # add an edge from source to destination
             self.adjList[src].append(dest)
- 
+
             # increment in-degree of destination vertex by 1
             self.indegree[dest] = self.indegree[dest] + 1
 
@@ -163,47 +168,47 @@ class Graph:
 def findAllTopologicalOrders(graph, path, discovered, N, allpaths, maxnumber=1):
     if len(allpaths) >= maxnumber:
         return
-    
+
     # do for every vertex
     for v in range(N):
- 
+
         # proceed only if in-degree of current node is 0 and
         # current node is not processed yet
         if graph.indegree[v] == 0 and not discovered[v]:
- 
+
             # for every adjacent vertex u of v, reduce in-degree of u by 1
             for u in graph.adjList[v]:
                 graph.indegree[u] = graph.indegree[u] - 1
- 
+
             # include current node in the path and mark it as discovered
             path.append(v)
             discovered[v] = True
- 
+
             # recur
             findAllTopologicalOrders(graph, path, discovered, N, allpaths)
- 
+
             # backtrack: reset in-degree information for the current node
             for u in graph.adjList[v]:
                 graph.indegree[u] = graph.indegree[u] + 1
- 
+
             # backtrack: remove current node from the path and
             # mark it as undiscovered
             path.pop()
             discovered[v] = False
- 
+
     # record valid ordering
     if len(path) == N:
         allpaths.append(path.copy())
- 
- 
+
+
 # get all topological orderings of a given DAG as a list
 def printAllTopologicalOrders(graph, maxnumber=1):
     # get number of nodes in the graph
     N = len(graph.adjList)
- 
+
     # create an auxiliary space to keep track of whether vertex is discovered
     discovered = [False] * N
- 
+
     # list to store the topological order
     path = []
     allpaths = []
@@ -215,21 +220,23 @@ def printAllTopologicalOrders(graph, maxnumber=1):
 
 # find all tasks that depend on a given task (id); when a cache
 # dict is given we can fill for the whole graph in one pass...
-def find_all_dependent_tasks(possiblenexttask, tid, cache={}):
-    c=cache.get(tid)
+def find_all_dependent_tasks(possiblenexttask, tid, cache=None):
+    c=cache.get(tid) if cache else None
     if c!=None:
         return c
-    
+
     daughterlist=[tid]
     # possibly recurse
     for n in possiblenexttask[tid]:
-        c = cache.get(n)
+        c = cache.get(n) if cache else None
         if c == None:
             c = find_all_dependent_tasks(possiblenexttask, n, cache)
         daughterlist = daughterlist + c
-        cache[n]=c
+        if cache is not None:
+            cache[n]=c
 
-    cache[tid]=daughterlist
+    if cache is not None:
+        cache[tid]=daughterlist
     return list(set(daughterlist))
 
 
@@ -247,12 +254,12 @@ def analyseGraph(edges, nodes):
         nextjobtrivial[e[0]].append(e[1])
         if nextjobtrivial[-1].count(e[1]):
             nextjobtrivial[-1].remove(e[1])
-    
+
     # find topological orderings of the graph
     # create a graph from edges
     graph = Graph(edges, N)
     orderings = printAllTopologicalOrders(graph)
-            
+
     return (orderings, nextjobtrivial)
 
 
@@ -279,7 +286,7 @@ def draw_workflow(workflowspec):
             dot.edge(str(fromindex), str(toindex))
 
     dot.render('workflow.gv')
-            
+
 # builds the graph given a "taskuniverse" list
 # builds accompagnying structures tasktoid and idtotask
 def build_graph(taskuniverse, workflowspec):
@@ -292,9 +299,9 @@ def build_graph(taskuniverse, workflowspec):
         nodes.append(tasktoid[t[0]['name']])
         for n in t[0]['needs']:
             edges.append((tasktoid[n], tasktoid[t[0]['name']]))
-    
+
     return (edges, nodes)
-        
+
 
 # loads json into dict, e.g. for workflow specification
 def load_json(workflowfile):
@@ -330,7 +337,7 @@ def filter_workflow(workflowspec, targets=[], targetlabels=[]):
             if targetlabels.count(l)!=0:
                 return True
         return False
-    
+
     # The following sequence of operations works and is somewhat structured.
     # However, it builds lookups used elsewhere as well, so some CPU might be saved by reusing
     # some structures across functions or by doing less passes on the data.
@@ -338,7 +345,7 @@ def filter_workflow(workflowspec, targets=[], targetlabels=[]):
     # helper lookup
     tasknametoid = { t['name']:i for i, t in enumerate(workflowspec['stages'],0) }
 
-    # check if a task can be run at all 
+    # check if a task can be run at all
     # or not due to missing requirements
     def canBeDone(t,cache={}):
        ok = True
@@ -390,17 +397,17 @@ def filter_workflow(workflowspec, targets=[], targetlabels=[]):
     return transformedworkflowspec
 
 
-# builds topological orderings (for each timeframe)    
+# builds topological orderings (for each timeframe)
 def build_dag_properties(workflowspec):
     globaltaskuniverse = [ (l, i) for i, l in enumerate(workflowspec['stages'], 1) ]
     timeframeset = set( l['timeframe'] for l in workflowspec['stages'] )
 
     edges, nodes = build_graph(globaltaskuniverse, workflowspec)
     tup = analyseGraph(edges, nodes.copy())
-    # 
+    #
     global_next_tasks = tup[1]
 
-    
+
     dependency_cache = {}
     # weight influences scheduling order can be anything user defined ... for the moment we just prefer to stay within a timeframe
     # then take the number of tasks that depend on a task as further weight
@@ -408,7 +415,7 @@ def build_dag_properties(workflowspec):
     # TODO: make this a policy of the runner to study different strategies
     def getweight(tid):
         return (globaltaskuniverse[tid][0]['timeframe'], len(find_all_dependent_tasks(global_next_tasks, tid, dependency_cache)))
-    
+
     task_weights = [ getweight(tid) for tid in range(len(globaltaskuniverse)) ]
 
     for tid in range(len(globaltaskuniverse)):
@@ -514,7 +521,7 @@ class WorkflowExecutor:
               exit (0)
           print ('Workflow is empty. Nothing to do')
           exit (0)
-      
+
       workflow = build_dag_properties(self.workflowspec)
       if args.visualize_workflow:
           draw_workflow(self.workflowspec)
@@ -531,8 +538,19 @@ class WorkflowExecutor:
       if args.update_resources:
           update_resource_estimates(self.workflowspec, args.update_resources)
 
-      self.maxmemperid = [ self.workflowspec['stages'][tid]['resources']['mem'] for tid in range(len(self.taskuniverse)) ]
-      self.cpuperid = [ self.workflowspec['stages'][tid]['resources']['cpu'] for tid in range(len(self.taskuniverse)) ]
+      self.maxmemperid = [ float(self.workflowspec['stages'][tid]['resources']['mem']) for tid in range(len(self.taskuniverse)) ]
+      self.cpuperid = [ float(self.workflowspec['stages'][tid]['resources']['cpu']) for tid in range(len(self.taskuniverse)) ]
+      self.maxmemperid_persistent = self.maxmemperid.copy()
+      self.cpuperid_persistent = self.cpuperid.copy()
+      self.resources_running_dict = {}
+      self.resources_running_tid = []
+      for _, task in enumerate(self.workflowspec['stages']):
+        global_task_name = self.get_global_task_name(task["name"])
+        if global_task_name not in self.resources_running_dict:
+            self.resources_running_dict[global_task_name] = [False, None, None, [], task["resources"]["relative_cpu"] if task["resources"]["relative_cpu"] else 1]
+        # now we can look everything up via tid
+        self.resources_running_tid.append(self.resources_running_dict[global_task_name])
+
       self.curmembooked = 0
       self.curcpubooked = 0
       self.curmembooked_backfill = 0
@@ -564,6 +582,12 @@ class WorkflowExecutor:
       # init alternative software environments
       self.init_alternative_software_environments()
 
+      self.try_job_from_candidates_backfill_impl = self.try_job_from_candidates_backfill_default
+      if args.optimise_cpu:
+        self.try_job_from_candidates_impl = self.try_job_from_candidates_cpu
+      else:
+        self.try_job_from_candidates_impl = self.try_job_from_candidates_default
+
     def SIGHandler(self, signum, frame):
        # basically forcing shut down of all child processes
        actionlogger.info("Signal " + str(signum) + " caught")
@@ -580,7 +604,7 @@ class WorkflowExecutor:
              p.terminate()
            except (psutil.NoSuchProcess, psutil.AccessDenied):
              pass
-   
+
        gone, alive = psutil.wait_procs(procs, timeout=3)
        for p in alive:
            try:
@@ -601,7 +625,7 @@ class WorkflowExecutor:
         if workflowspec['stages'][init_index]['name'] == '__global_init_task__':
           env = workflowspec['stages'][init_index].get('env', None)
           if env != None:
-            globalenv = { e : env[e] for e in env } 
+            globalenv = { e : env[e] for e in env }
           del workflowspec['stages'][init_index]
 
         return globalenv
@@ -621,6 +645,13 @@ class WorkflowExecutor:
         done_filename = workdir + '/' + name + '.log_done'
         return done_filename
 
+    def get_res_filename(self, tid):
+        name = self.workflowspec['stages'][tid]['name']
+        workdir = self.workflowspec['stages'][tid]['cwd']
+        # name and workdir define the "done" file as used by taskwrapper
+        # this assumes that taskwrapper is used to actually check if something is to be rerun
+        return os.path.join(workdir, f"{name}.log_time")
+
     # removes the done flag from tasks that need to be run again
     def remove_done_flag(self, listoftaskids):
        for tid in listoftaskids:
@@ -632,7 +663,7 @@ class WorkflowExecutor:
               print ("Marking task " + name + " as to be done again")
               if os.path.exists(done_filename) and os.path.isfile(done_filename):
                   os.remove(done_filename)
-      
+
     # submits a task as subprocess and records Popen instance
     def submit(self, tid, nice=os.nice(0)):
       actionlogger.debug("Submitting task " + str(self.idtotask[tid]) + " with nice value " + str(nice))
@@ -675,7 +706,7 @@ class WorkflowExecutor:
       return p
 
     def ok_to_submit(self, tid, backfill=False):
-      softcpufactor=1 
+      softcpufactor=1
       softmemfactor=1
       if backfill:
           softcpufactor=1.5
@@ -687,33 +718,36 @@ class WorkflowExecutor:
         if self.semaphore_values[sem] > 0:
            return False
 
+      maxcpu = self.cpuperid[tid]
+      maxmem = self.maxmemperid[tid]
+      actionlogger.info("Setup resources for task %s, cpu: %d, mem: %d", self.idtotask[tid], maxcpu, maxmem)
       # check other resources
       if not backfill:
           # analyse CPU
-          okcpu = (self.curcpubooked + float(self.cpuperid[tid]) <= self.cpulimit)
+          okcpu = (self.curcpubooked + maxcpu <= self.cpulimit)
           # analyse MEM
-          okmem = (self.curmembooked + float(self.maxmemperid[tid]) <= self.memlimit)
+          okmem = (self.curmembooked + maxmem <= self.memlimit)
           actionlogger.debug ('Condition check --normal-- for  ' + str(tid) + ':' + str(self.idtotask[tid]) + ' CPU ' + str(okcpu) + ' MEM ' + str(okmem))
           return (okcpu and okmem)
       else:
-          # only backfill one job at a time
-          if self.curcpubooked_backfill > 0:
-              return False
+        # only backfill one job at a time
+        if self.curcpubooked_backfill > 0:
+            return False
 
-          # not backfilling jobs which either take much memory or use lot's of CPU anyway
-          # conditions are somewhat arbitrary and can be played with
-          if float(self.cpuperid[tid]) > 0.9*float(self.args.cpu_limit):
-              return False
-          if float(self.maxmemperid[tid])/float(self.args.cpu_limit) >= 1900:
-              return False
+        # not backfilling jobs which either take much memory or use lot's of CPU anyway
+        # conditions are somewhat arbitrary and can be played with
+        if maxcpu > 0.9*float(self.args.cpu_limit):
+            return False
+        if maxmem/float(self.args.cpu_limit) >= 1900:
+            return False
 
-          # analyse CPU
-          okcpu = (self.curcpubooked_backfill + float(self.cpuperid[tid]) <= self.cpulimit)
-          okcpu = okcpu and (self.curcpubooked + self.curcpubooked_backfill + float(self.cpuperid[tid]) <= softcpufactor*self.cpulimit)
-          # analyse MEM
-          okmem = (self.curmembooked + self.curmembooked_backfill + float(self.maxmemperid[tid]) <= softmemfactor*self.memlimit)
-          actionlogger.debug ('Condition check --backfill-- for  ' + str(tid) + ':' + str(self.idtotask[tid]) + ' CPU ' + str(okcpu) + ' MEM ' + str(okmem))
-          return (okcpu and okmem)
+        # analyse CPU
+        okcpu = (self.curcpubooked_backfill + maxcpu <= self.cpulimit)
+        okcpu = okcpu and (self.curcpubooked + self.curcpubooked_backfill + maxcpu <= softcpufactor*self.cpulimit)
+        # analyse MEM
+        okmem = (self.curmembooked + self.curmembooked_backfill + maxmem <= softmemfactor*self.memlimit)
+        actionlogger.debug ('Condition check --backfill-- for  ' + str(tid) + ':' + str(self.idtotask[tid]) + ' CPU ' + str(okcpu) + ' MEM ' + str(okmem))
+        return (okcpu and okmem)
       return False
 
 
@@ -732,11 +766,11 @@ class WorkflowExecutor:
 
         # CPU + MEM
         if not backfill:
-          self.curmembooked+=float(self.maxmemperid[tid])
-          self.curcpubooked+=float(self.cpuperid[tid])
+          self.curmembooked+=self.maxmemperid[tid]
+          self.curcpubooked+=self.cpuperid[tid]
         else:
-          self.curmembooked_backfill+=float(self.maxmemperid[tid])
-          self.curcpubooked_backfill+=float(self.cpuperid[tid])
+          self.curmembooked_backfill+=self.maxmemperid[tid]
+          self.curcpubooked_backfill+=self.cpuperid[tid]
 
     def unbook_resources(self, tid, backfill = False):
         # "frees" the nominal resources used by a certain task from the accounting
@@ -747,33 +781,74 @@ class WorkflowExecutor:
 
         # CPU + MEM
         if not backfill:
-          self.curmembooked-=float(self.maxmemperid[tid])
-          self.curcpubooked-=float(self.cpuperid[tid])
+          self.curmembooked-=self.maxmemperid[tid]
+          self.curcpubooked-=self.cpuperid[tid]
         else:
-          self.curmembooked_backfill-=float(self.maxmemperid[tid])
-          self.curcpubooked_backfill-=float(self.cpuperid[tid])
+          self.curmembooked_backfill-=self.maxmemperid[tid]
+          self.curcpubooked_backfill-=self.cpuperid[tid]
 
 
-    def try_job_from_candidates(self, taskcandidates, process_list, finished):
-       self.scheduling_iteration = self.scheduling_iteration + 1
+    def try_job_from_candidates_default(self, taskcandidates):
+        for tid in taskcandidates.copy():
+            actionlogger.debug ("trying to submit " + str(tid) + ':' + str(self.idtotask[tid]))
+            self.update_resources(tid)
+            if (len(self.process_list) + len(self.backfill_process_list) < self.max_jobs_parallel) and self.ok_to_submit(tid):
+                p=self.submit(tid)
+                if p!=None:
+                    self.book_resources(tid)
+                    self.process_list.append((tid,p))
+                    taskcandidates.remove(tid)
+                    # minimal delay
+                    time.sleep(0.1)
+            else:
+                break #---> we break at first failure assuming some priority (other jobs may come in via backfill)
 
-       # remove "done / skippable" tasks immediately
-       tasks_skipped = False
-       for tid in taskcandidates.copy():  # <--- the copy is important !! otherwise this loop is not doing what you think
-          if self.ok_to_skip(tid):
-              finished.append(tid)
-              taskcandidates.remove(tid)
-              tasks_skipped = True
-              actionlogger.info("Skipping task " + str(self.idtotask[tid]))
 
-       # if tasks_skipped:
-       #   return # ---> we return early in order to preserve some ordering (the next candidate tried should be daughters of skipped jobs) 
+    def try_job_from_candidates_cpu(self, taskcandidates):
+        # collect all that would be ok to submit
+        possible_submit = []
+        # the cpu and mem the process will potentially take
+        potential_cpu_mem_time = []
 
-       # the ordinary process list part
-       initialcandidates=taskcandidates.copy()
-       for tid in initialcandidates:
-          actionlogger.debug ("trying to submit " + str(tid) + ':' + str(self.idtotask[tid]))
-          if (len(self.process_list) + len(self.backfill_process_list) < self.max_jobs_parallel) and self.ok_to_submit(tid):
+        for tid in taskcandidates.copy():
+            actionlogger.debug ("trying to submit " + str(tid) + ':' + str(self.idtotask[tid]))
+            self.update_resources(tid)
+            if (len(self.process_list) + len(self.backfill_process_list) < self.max_jobs_parallel) and self.ok_to_submit(tid):
+                possible_submit.append(tid)
+                potential_cpu_mem_time.append((self.cpuperid[tid], self.maxmemperid[tid], self.get_walltime(tid)))
+
+        # see how much resources are free as we go
+        residual_cpu_mem_time = [[i, self.cpulimit - self.curcpubooked, self.memlimit - self.curmembooked, []] for i, _ in enumerate(possible_submit)]
+
+        # each list in this list is a combination of task IDs
+        build_lists = [[] for _ in possible_submit]
+
+        for i, _ in enumerate(possible_submit):
+            # we want to fill each list in build_lists
+            for j in range(-len(possible_submit) + i, i):
+                this_cpu, this_mem, this_time = potential_cpu_mem_time[j]
+                _, res_cpu, res_mem, _ = residual_cpu_mem_time[i]
+                if res_cpu - this_cpu < 0 or res_mem - this_mem < 0:
+                    # too much mem or cpu would be taken
+                    continue
+                build_lists[i].append(possible_submit[j])
+                residual_cpu_mem_time[i][1] -= this_cpu
+                residual_cpu_mem_time[i][2] -= this_mem
+                if this_time:
+                    # greater 0 and not None
+                    residual_cpu_mem_time[i][3].append(this_time)
+            # round cpu so that we can also sort meaningfully by another parameter
+            residual_cpu_mem_time[i][1] = round(residual_cpu_mem_time[i][1], 1)
+
+        if possible_submit:
+            # go for best cpu usage first and after that, sort by number of tasks that could be submitted
+            residual_cpu_mem_time.sort(key=lambda tup: (tup[1], -len(build_lists[tup[0]])))
+            index = residual_cpu_mem_time[0][0]
+
+            possible_submit = build_lists[index]
+
+        for tid in possible_submit:
+            # submit all of these tasks
             p=self.submit(tid)
             if p!=None:
                 self.book_resources(tid)
@@ -781,24 +856,44 @@ class WorkflowExecutor:
                 taskcandidates.remove(tid)
                 # minimal delay
                 time.sleep(0.1)
-          else:
-             break #---> we break at first failure assuming some priority (other jobs may come in via backfill)
+            else:
+                break #---> we break at first failure assuming some priority (other jobs may come in via backfill)
 
-       # the backfill part for remaining candidates
-       initialcandidates=taskcandidates.copy()
-       for tid in initialcandidates:
-          actionlogger.debug ("trying to backfill submit " + str(tid) + ':' + str(self.idtotask[tid]))
+    def try_job_from_candidates_backfill_default(self, taskcandidates):
+        # the backfill part for remaining candidates
+        initialcandidates=taskcandidates.copy()
 
-          if (len(self.process_list) + len(self.backfill_process_list) < self.max_jobs_parallel) and self.ok_to_submit(tid, backfill=True):
-            p=self.submit(tid, 19)
-            if p!=None:
-                self.book_resources(tid, backfill=True)
-                self.process_list.append((tid,p))
-                taskcandidates.remove(tid) #-> not sure about this one
-                # minimal delay
-                time.sleep(0.1)
-          else:
-             continue
+        for tid in initialcandidates:
+            actionlogger.debug ("trying to backfill submit " + str(tid) + ':' + str(self.idtotask[tid]))
+
+            if (len(self.process_list) + len(self.backfill_process_list) < self.max_jobs_parallel) and self.ok_to_submit(tid, backfill=True):
+                p=self.submit(tid, 19)
+                if p!=None:
+                    self.book_resources(tid, backfill=True)
+                    self.process_list.append((tid,p))
+                    taskcandidates.remove(tid) #-> not sure about this one
+                    # minimal delay
+                    time.sleep(0.1)
+            else:
+                continue
+
+
+    def try_job_from_candidates_wrapper(self, taskcandidates, finished):
+       self.scheduling_iteration = self.scheduling_iteration + 1
+
+       print(f"Current free CPU: {self.cpulimit - self.curcpubooked}")
+       print(f"Current free MEM: {self.memlimit - self.curmembooked}")
+
+       # remove "done / skippable" tasks immediately
+       for tid in taskcandidates.copy():  # <--- the copy is important !! otherwise this loop is not doing what you think
+          if self.ok_to_skip(tid):
+              finished.append(tid)
+              taskcandidates.remove(tid)
+              actionlogger.info("Skipping task " + str(self.idtotask[tid]))
+
+       self.try_job_from_candidates_impl(taskcandidates)
+       self.try_job_from_candidates_backfill_impl(taskcandidates)
+
 
     def stop_pipeline_and_exit(self, process_list):
         # kill all remaining jobs
@@ -807,12 +902,64 @@ class WorkflowExecutor:
 
         exit(1)
 
+    def get_global_task_name(self, name):
+        tokens = name.split("_")
+        try:
+            int(tokens[-1])
+            return "_".join(tokens[:-1])
+        except ValueError:
+            pass
+        return name
+
+
+    def add_resources(self, tid):
+        """
+        Read file that is produced by O2 jobutils2.sh taskwrapper
+
+        In case it doesn't exist, simply return
+
+        Extract CPU, memory and walltime
+        """
+        filename = self.get_res_filename(tid)
+        if not os.path.exists(filename):
+            actionlogger.info("DONE filename does not exist at %s", filename)
+            return
+        res = self.resources_running_tid[tid]
+        res[0] = True
+        with open(filename, "r") as f:
+            for l in f:
+                if "CPU" in l:
+                    res[1] = max(float(l.strip().split()[-1].split('%')[0]) / 100, res[1] if res[1] else 0)
+                elif "mem" in l:
+                    res[2] = max(float(l.strip().split()[-1]) / 1024, res[2] if res[2] else 0)
+                elif "walltime" in l:
+                    res[3].append(float(l.strip().split()[-1]))
+
+
+    def update_resources(self, tid):
+        """
+        Upudate the resources from derived ones
+
+        If not possible, take original user estimates
+        """
+        if not args.dynamic_resources:
+            return
+        res = self.resources_running_tid[tid]
+        self.cpuperid[tid] = min(float(self.cpuperid[tid]) if not res[0] or res[1] is None else res[1] * res[4], self.cpuperid_persistent[tid])
+        self.maxmemperid[tid] = min(float(self.maxmemperid[tid]) if not res[0] or res[2] is None else res[2], self.maxmemperid_persistent[tid])
+
+    def get_walltime(self, tid):
+        return np.mean(res[3]) if res[0] else None
+
+
     def monitor(self, process_list):
         self.internalmonitorcounter+=1
         if self.internalmonitorcounter % 5 != 0:
             return
 
         self.internalmonitorid+=1
+
+
 
         globalCPU=0.
         globalPSS=0.
@@ -885,9 +1032,10 @@ class WorkflowExecutor:
                         pass
 
             resources_per_task[tid]={'iter':self.internalmonitorid, 'name':self.idtotask[tid], 'cpu':totalCPU, 'uss':totalUSS/1024./1024., 'pss':totalPSS/1024./1024, 'nice':self.nicevalues[tid], 'swap':totalSWAP, 'label':self.workflowspec['stages'][tid]['labels']}
+
             metriclogger.info(resources_per_task[tid])
             send_webhook(self.args.webhook, resources_per_task)
-            
+
         for r in resources_per_task.values():
             if r['nice']==os.nice(0):
                 globalCPU+=r['cpu']
@@ -919,6 +1067,8 @@ class WorkflowExecutor:
             self.unbook_resources(tid, backfill = self.nicevalues[tid]!=os.nice(0) )
             self.procstatus[tid]='Done'
             finished.append(tid)
+            self.add_resources(tid)
+            #self.validate_resources_running(tid)
             process_list.remove(p)
             if returncode != 0:
                print (str(self.idtotask[tid]) + ' failed ... checking retry')
@@ -928,12 +1078,12 @@ class WorkflowExecutor:
                  actionlogger.info ('Task ' + str(self.idtotask[tid]) + ' failed but marked to be retried ')
                  self.tids_marked_toretry.append(tid)
                  self.retry_counter[tid] += 1
- 
+
                else:
                  failuredetected = True
                  failingpids.append(pid)
                  failingtasks.append(tid)
-    
+
        if failuredetected and self.stoponfailure:
           actionlogger.info('Stoping pipeline due to failure in stages with PID ' + str(failingpids))
           # self.analyse_files_and_connections()
@@ -942,7 +1092,7 @@ class WorkflowExecutor:
           self.send_checkpoint(failingtasks, self.args.checkpoint_on_failure)
           self.stop_pipeline_and_exit(process_list)
 
-       # empty finished means we have to wait more        
+       # empty finished means we have to wait more
        return len(finished)==0
 
 
@@ -961,7 +1111,7 @@ class WorkflowExecutor:
         # Ideally, this should be made user configurable. Either the user could inject a lambda
         # or a regular expression to use. For now we just put a hard coded list
         logfile = self.get_logfile(tid)
-        
+
         return True #! --> for now we just retry tasks a few times
 
         # 1) ZMQ_EVENT + interrupted system calls (DPL bug during shutdown)
@@ -971,7 +1121,7 @@ class WorkflowExecutor:
         #   return True
 
         # return False
-         
+
 
     def cat_logfiles_tostdout(self, taskids):
         # In case of errors we can cat the logfiles for this taskname
@@ -1242,7 +1392,7 @@ Use the `--produce-script myscript.sh` option for this.
           for i,t in enumerate(self.workflowspec['stages'],0):
               print (t['name'] + '  (' + str(t['labels']) + ')' + ' ToDo: ' + str(not self.ok_to_skip(i)))
           exit (0)
- 
+
         if args.produce_script != None:
           self.produce_script(args.produce_script)
           exit (0)
@@ -1262,30 +1412,43 @@ Use the `--produce-script myscript.sh` option for this.
         # *****************
         # main control loop
         # *****************
-        currenttimeframe=1
         candidates = [ tid for tid in self.possiblenexttask[-1] ]
 
         self.process_list=[] # list of tuples of nodes ids and Popen subprocess instances
 
         finishedtasks=[] # global list of finished tasks
+
         try:
 
             while True:
                 # sort candidate list according to task weights
-                candidates = [ (tid, self.taskweights[tid]) for tid in candidates ]
-                candidates.sort(key=lambda tup: (tup[1][0],-tup[1][1])) # prefer small and same timeframes first then prefer important tasks within frameframe
+                candidates_tmp = candidates.copy()
+                candidates = []
+                for tid in candidates_tmp:
+                    self.update_resources(tid)
+                    candidates.append((tid, self.taskweights[tid], self.cpuperid[tid] / self.cpulimit))
+
+                if args.optimise_cpu:
+                    candidates.sort(key=lambda tup: (-tup[2], -tup[1][1])) # prefer heavy tasks, after that sort by importance
+                else:
+                    candidates.sort(key=lambda tup: (tup[1][0],-tup[1][1])) # prefer small and same timeframes first then prefer important tasks within frameframe
                 # remove weights
-                candidates = [ tid for tid,_ in candidates ]
+                candidates = [ tid for tid,_,_ in candidates ]
 
                 finished = [] # --> to account for finished because already done or skipped
                 actionlogger.debug('Sorted current candidates: ' + str([(c,self.idtotask[c]) for c in candidates]))
-                self.try_job_from_candidates(candidates, self.process_list, finished)
+                self.try_job_from_candidates_wrapper(candidates, finished)
                 if len(candidates) > 0 and len(self.process_list) == 0:
+                    if self.curcpubooked != 0 or self.curcpubooked_backfill != 0:
+                        self.curcpubooked = 0
+                        self.curcpubooked_backfill = 0
+                        continue
+
                     self.noprogress_errormsg()
                     send_webhook(self.args.webhook,"Unable to make further progress: Quitting")
                     errorencountered = True
                     break
-            
+
                 finished_from_started = [] # to account for finished when actually started
                 failing = []
                 while self.waitforany(self.process_list, finished_from_started, failing):
@@ -1328,10 +1491,10 @@ Use the `--produce-script myscript.sh` option for this.
                         # try to see if this is really a candidate:
                             if self.is_good_candidate(candid, finishedtasks) and candidates.count(candid)==0:
                                 candidates.append(candid)
-    
+
                 actionlogger.debug("New candidates " + str( candidates))
                 send_webhook(self.args.webhook, "New candidates " + str(candidates))
-    
+
                 if len(candidates)==0 and len(self.process_list)==0:
                    break
         except Exception as e:
@@ -1355,7 +1518,9 @@ Use the `--produce-script myscript.sh` option for this.
 
 if args.cgroup!=None:
     myPID=os.getpid()
-    command="echo " + str(myPID) + " > /sys/fs/cgroup/cpuset/"+args.cgroup+"/tasks"
+    # cgroups such as /sys/fs/cgroup/cpuset/<cgroup-name>/tasks
+    # or              /sys/fs/cgroup/cpu/<cgroup-name>/tasks
+    command="echo " + str(myPID) + f" > {args.cgroup}"
     actionlogger.info("applying cgroups " + command)
     os.system(command)
 
