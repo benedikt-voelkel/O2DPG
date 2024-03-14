@@ -237,13 +237,13 @@ export FAIRMQ_IPC_PREFIX=./
 
 echo "Ready to start main workflow"
 
-${O2DPG_ROOT}/MC/bin/o2_dpg_workflow_runner.py -f workflow.json -tt ${ALIEN_JDL_O2DPGWORKFLOWTARGET:-aod} --cpu-limit ${ALIEN_JDL_CPULIMIT:-8}
+${O2DPG_ROOT}/MC/bin/o2_dpg_workflow_runner.py -f workflow.json -tt ${ALIEN_JDL_O2DPGWORKFLOWTARGET:-aod} --cpu-limit ${ALIEN_JDL_CPULIMIT:-8} --dynamic-resources
 MCRC=$?  # <--- we'll report back this code
 
 if [[ "${ALIEN_JDL_ADDTIMESERIESINMC}" != "0" ]]; then
   # Default value is 1 so this is run by default.
   echo "Running TPC time series"
-  ${O2DPG_ROOT}/MC/bin/o2_dpg_workflow_runner.py -f workflow.json -tt tpctimes
+  ${O2DPG_ROOT}/MC/bin/o2_dpg_workflow_runner.py -f workflow.json -tt tpctimes --dynamic-resources
 fi
 
 [[ ! -z "${DISABLE_QC}" ]] && echo "INFO: QC is disabled, skip it."
@@ -251,7 +251,7 @@ fi
 if [[ -z "${DISABLE_QC}" && "${MCRC}" = "0" && "${remainingargs}" == *"--include-local-qc"* ]] ; then
   # do QC tasks
   echo "Doing QC"
-  ${O2DPG_ROOT}/MC/bin/o2_dpg_workflow_runner.py -f workflow.json --target-labels QC --cpu-limit ${ALIEN_JDL_CPULIMIT:-8} -k
+  ${O2DPG_ROOT}/MC/bin/o2_dpg_workflow_runner.py -f workflow.json --target-labels QC --cpu-limit ${ALIEN_JDL_CPULIMIT:-8} -k --dynamic-resources
   # NOTE that with the -k|--keep-going option, the runner will try to keep on executing even if some tasks fail.
   # That means, even if there is a failing QC task, the return code will be 0
   MCRC=$?
