@@ -11,6 +11,7 @@ import os
 import signal
 import socket
 import sys
+from math import ceil, round
 import traceback
 import platform
 import tarfile
@@ -539,18 +540,16 @@ class TaskResources:
         # the task ID belonging to these resources
         self.tid = tid
         self.name = name
-        # original CPUs/MEM assigned (persistent)
-        self.cpu_assigned_original = cpu
-        self.mem_assigned_original = mem
         # relative CPU, to be multiplied with sampled CPU; set by the user, e.g. to allow to backfill tasks
         # only takes effect when sampling resources; persistent
         self.cpu_relative = cpu_relative if cpu_relative else 1
         # CPUs/MEM assigned (transient)
         self.cpu_assigned = cpu
         self.mem_assigned = mem
+        self.n_workers_assigned = round(cpu / cpu_relative)
         # global resource settings
         self.resource_boundaries = resource_boundaries
-        # sampled resources of this
+        # sampled resources of this, note that the n_workers will be derived from cpu
         self.cpu_sampled = None
         self.mem_sampled = None
         # Set these after a task has finished to compute new estomates for related tasks
@@ -616,7 +615,8 @@ class TaskResources:
 
         if len(self.time_collect) < 3:
             # Consider at least 3 points to sample from
-            self.cpu_sampled = self.cpu_assigned
+            # This task was short, halfen the CPU
+            self.cpu_sampled = self.cpu_assigned / 2
             self.mem_sampled = self.mem_assigned
             actionlogger.debug("Task %s has not enough points (< 3) to sample resources, setting to previosuly assigned values.", self.name)
         else:
@@ -651,6 +651,7 @@ class TaskResources:
         for res in self.related_tasks:
             if res.is_done or res.booked:
                 continue
+            res.n_workers_assigned = ceil(cpu_sampled)
             res.cpu_assigned = cpu_sampled * res.cpu_relative
             res.mem_assigned = mem_sampled
             # This task has been run before, stay optimistic and limit the resources in case the sampled ones exceed limits
@@ -732,6 +733,10 @@ class ResourceManager:
                 self.resources_related_tasks_dict[related_tasks_name] = []
             self.resources_related_tasks_dict[related_tasks_name].append(resources)
             resources.related_tasks = self.resources_related_tasks_dict[related_tasks_name]
+
+    def adjust_cmd(self, tid, cmd):
+        resources = self.resources[tid]
+        return cmd.replace("!WFR_NWORKERS!", resources.n_workers_assigned)
 
     def add_monitored_resources(self, tid, time_delta_since_start, cpu, mem):
         self.resources[tid].add(time_delta_since_start, cpu, mem)
@@ -1074,6 +1079,7 @@ class WorkflowExecutor:
       """
       actionlogger.debug("Submitting task " + str(self.idtotask[tid]) + " with nice value " + str(nice))
       c = self.workflowspec['stages'][tid]['cmd']
+      c = self.resource_manager.adjust_cmd(tid, c)
       workdir = self.workflowspec['stages'][tid]['cwd']
       if workdir:
           if os.path.exists(workdir) and not os.path.isdir(workdir):
